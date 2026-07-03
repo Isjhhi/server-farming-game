@@ -23,10 +23,10 @@ mongoose.connect(MONGO_URI)
     .then(() => console.log("Terhubung ke MongoDB Cloud!"))
     .catch(err => console.error("Gagal konek MongoDB:", err));
 
-// --- SKEMA DATABASE (DITAMBAH FIELD PASSWORD) ---
+// --- SKEMA DATABASE ---
 const UserSchema = new mongoose.Schema({
     nomor_dana: { type: String, unique: true, required: true },
-    password: { type: String, required: true }, // Field Baru!
+    password: { type: String, required: true },
     farm_coin: { type: Number, default: 0 },
     cash_point: { type: Number, default: 0 },
     jumlah_bibit: { type: Number, default: 3 },
@@ -59,22 +59,19 @@ async function getPoinPerIklan() {
     }
 }
 
-// --- NEW ENDPOINT: REGISTER ---
+// --- ENDPOINT: REGISTER ---
 app.post('/api/register', async (req, res) => {
     try {
         const { nomor_dana, password } = req.body;
 
-        // Cek apakah nomor HP sudah dipakai orang lain
         let userSama = await User.findOne({ nomor_dana });
         if (userSama) {
             return res.status(400).json({ status: "error", message: "Nomor DANA sudah terdaftar!" });
         }
 
-        // Enkripsi / Acak password biar aman
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
 
-        // Bikin akun baru di database
         const userBaru = await User.create({
             nomor_dana,
             password: hashedPassword
@@ -86,24 +83,21 @@ app.post('/api/register', async (req, res) => {
     }
 });
 
-// --- NEW ENDPOINT: LOGIN ---
+// --- ENDPOINT: LOGIN ---
 app.post('/api/login', async (req, res) => {
     try {
         const { nomor_dana, password } = req.body;
 
-        // Cari user berdasarkan nomor dana
         const user = await User.findOne({ nomor_dana });
         if (!user) {
             return res.status(404).json({ status: "error", message: "Nomor DANA belum terdaftar!" });
         }
 
-        // Cocokkan password yang diketik dengan yang di database
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
             return res.status(400).json({ status: "error", message: "Password salah!" });
         }
 
-        // Kalau sukses, langsung kirim seluruh data saldo game-nya biar hemat request
         const currentPoin = await getPoinPerIklan();
         res.json({ 
             status: "success", 
@@ -179,20 +173,27 @@ app.get('/admin', async (req, res) => {
         const wds = await Withdraw.find({}).sort({ _id: -1 });
         const currentPoin = await getPoinPerIklan();
         
-        // MODIFIKASI: Ditambahkan form input ganti password langsung di baris tabel player
+        // MODIFIKASI: Ditambahkan form Tambah Cash Point di samping ganti password
         let playerRows = users.map(u => `
             <tr>
                 <td><strong>${u.nomor_dana}</strong></td>
                 <td>${u.farm_coin}</td>
-                <td>${u.cash_point}</td>
+                <td><span style="background: #fff3cd; padding: 2px 6px; border-radius: 4px; font-weight: bold;">${u.cash_point}</span></td>
                 <td>${u.jumlah_bibit}</td>
                 <td>${u.jumlah_lahan}</td>
                 <td>${u.daily_ads}</td>
                 <td>
                     <form action="/admin/change-password" method="POST" style="display:inline-flex; gap: 5px;">
                         <input type="hidden" name="nomor_dana" value="${u.nomor_dana}">
-                        <input type="text" name="password_baru" placeholder="Sandi Baru" required style="padding: 4px; border: 1px solid #ddd; border-radius:4px; width: 110px;">
+                        <input type="text" name="password_baru" placeholder="Sandi Baru" required style="padding: 4px; border: 1px solid #ddd; border-radius:4px; width: 100px;">
                         <input type="submit" value="Ganti" class="btn-success" style="padding: 4px 8px; font-size: 13px;">
+                    </form>
+                </td>
+                <td>
+                    <form action="/admin/add-cashpoint" method="POST" style="display:inline-flex; gap: 5px;">
+                        <input type="hidden" name="nomor_dana" value="${u.nomor_dana}">
+                        <input type="number" name="jumlah_poin" placeholder="Contoh: 100" required style="padding: 4px; border: 1px solid #ddd; border-radius:4px; width: 90px;">
+                        <input type="submit" value="Suntik + " class="btn-info" style="padding: 4px 8px; font-size: 13px;">
                     </form>
                 </td>
             </tr>
@@ -241,6 +242,8 @@ app.get('/admin', async (req, res) => {
                     .btn-success:hover { background: #218838; }
                     .btn-danger { background: #dc3545; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold;}
                     .btn-danger:hover { background: #c82333; }
+                    .btn-info { background: #17a2b8; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-weight: bold;}
+                    .btn-info:hover { background: #138496; }
                 </style>
             </head>
             <body>
@@ -286,10 +289,11 @@ app.get('/admin', async (req, res) => {
                                 <th>Lahan Terbuka</th>
                                 <th>Iklan Hari Ini</th>
                                 <th>Aksi Ganti Password</th>
+                                <th>Aksi Tambah Saldo</th>
                             </tr>
                         </thead>
                         <tbody>
-                            ${playerRows.length > 0 ? playerRows : '<tr><td colspan="7" style="text-align:center;">Belum ada data pemain</td></tr>'}
+                            ${playerRows.length > 0 ? playerRows : '<tr><td colspan="8" style="text-align:center;">Belum ada data pemain</td></tr>'}
                         </tbody>
                     </table>
                 </div>
@@ -301,24 +305,37 @@ app.get('/admin', async (req, res) => {
     }
 });
 
-// --- NEW ROUTE ACTION: PROSES GANTI PASSWORD VIA WEB ADMIN ---
+// --- ROUTE ACTION: PROSES GANTI PASSWORD ---
 app.post('/admin/change-password', async (req, res) => {
     try {
         const { nomor_dana, password_baru } = req.body;
-        if (!nomor_dana || !password_baru) {
-            return res.status(400).send("Nomor DANA dan Password baru tidak boleh kosong!");
-        }
+        if (!nomor_dana || !password_baru) return res.status(400).send("Input tidak boleh kosong!");
 
-        // Hash password baru pake bcryptjs agar tersimpan aman dan sinkron dengan sistem login game
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password_baru, salt);
 
         await User.findOneAndUpdate({ nomor_dana: nomor_dana }, { password: hashedPassword });
-        
-        // Selesai ubah, otomatis refresh balik ke halaman web admin
         res.redirect('/admin');
     } catch (err) {
-        res.status(500).send("Gagal mengubah password pemain: " + err.message);
+        res.status(500).send("Gagal mengubah password: " + err.message);
+    }
+});
+
+// --- NEW ROUTE ACTION: PROSES SUNTIK CASH POINT VIA WEB ADMIN ---
+app.post('/admin/add-cashpoint', async (req, res) => {
+    try {
+        const { nomor_dana, jumlah_poin } = req.body;
+        if (!nomor_dana || !jumlah_poin) return res.status(400).send("Input tidak boleh kosong!");
+
+        // Menggunakan operator $inc agar poin baru ditambahkan ke poin yang sudah ada
+        await User.findOneAndUpdate(
+            { nomor_dana: nomor_dana },
+            { $inc: { cash_point: parseInt(jumlah_poin) } }
+        );
+
+        res.redirect('/admin'); // Refresh halaman admin setelah sukses
+    } catch (err) {
+        res.status(500).send("Gagal menyuntik cash point: " + err.message);
     }
 });
 
