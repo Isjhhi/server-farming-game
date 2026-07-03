@@ -1,0 +1,4 @@
+module.exports = {
+    poin_per_iklan: 1000,
+    max_ads_per_day: 50
+};
