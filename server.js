@@ -179,6 +179,7 @@ app.get('/admin', async (req, res) => {
         const wds = await Withdraw.find({}).sort({ _id: -1 });
         const currentPoin = await getPoinPerIklan();
         
+        // MODIFIKASI: Ditambahkan form input ganti password langsung di baris tabel player
         let playerRows = users.map(u => `
             <tr>
                 <td><strong>${u.nomor_dana}</strong></td>
@@ -187,6 +188,13 @@ app.get('/admin', async (req, res) => {
                 <td>${u.jumlah_bibit}</td>
                 <td>${u.jumlah_lahan}</td>
                 <td>${u.daily_ads}</td>
+                <td>
+                    <form action="/admin/change-password" method="POST" style="display:inline-flex; gap: 5px;">
+                        <input type="hidden" name="nomor_dana" value="${u.nomor_dana}">
+                        <input type="text" name="password_baru" placeholder="Sandi Baru" required style="padding: 4px; border: 1px solid #ddd; border-radius:4px; width: 110px;">
+                        <input type="submit" value="Ganti" class="btn-success" style="padding: 4px 8px; font-size: 13px;">
+                    </form>
+                </td>
             </tr>
         `).join('');
 
@@ -237,7 +245,7 @@ app.get('/admin', async (req, res) => {
             </head>
             <body>
                 <h2>Dashboard Utama Control Panel</h2>
-                
+                 
                 <div class="card">
                     <h3>Setelan Global Game Variable</h3>
                     <form action="/admin/update-config" method="POST">
@@ -277,10 +285,11 @@ app.get('/admin', async (req, res) => {
                                 <th>Stok Bibit</th>
                                 <th>Lahan Terbuka</th>
                                 <th>Iklan Hari Ini</th>
+                                <th>Aksi Ganti Password</th>
                             </tr>
                         </thead>
                         <tbody>
-                            ${playerRows.length > 0 ? playerRows : '<tr><td colspan="6" style="text-align:center;">Belum ada data pemain</td></tr>'}
+                            ${playerRows.length > 0 ? playerRows : '<tr><td colspan="7" style="text-align:center;">Belum ada data pemain</td></tr>'}
                         </tbody>
                     </table>
                 </div>
@@ -289,6 +298,27 @@ app.get('/admin', async (req, res) => {
         `);
     } catch (err) {
         res.status(500).send("Admin Panel Error: " + err.message);
+    }
+});
+
+// --- NEW ROUTE ACTION: PROSES GANTI PASSWORD VIA WEB ADMIN ---
+app.post('/admin/change-password', async (req, res) => {
+    try {
+        const { nomor_dana, password_baru } = req.body;
+        if (!nomor_dana || !password_baru) {
+            return res.status(400).send("Nomor DANA dan Password baru tidak boleh kosong!");
+        }
+
+        // Hash password baru pake bcryptjs agar tersimpan aman dan sinkron dengan sistem login game
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password_baru, salt);
+
+        await User.findOneAndUpdate({ nomor_dana: nomor_dana }, { password: hashedPassword });
+        
+        // Selesai ubah, otomatis refresh balik ke halaman web admin
+        res.redirect('/admin');
+    } catch (err) {
+        res.status(500).send("Gagal mengubah password pemain: " + err.message);
     }
 });
 
