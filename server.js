@@ -2,6 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const bcrypt = require('bcryptjs'); // Library pengaman password
+const jwt = require('jsonwebtoken'); // TAMBAHAN: Library Token Keamanan
 const app = express();
 
 app.use(cors());
@@ -9,6 +10,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 const RATIO_CASHPOINT_KE_RUPIAH = 1; 
+const JWT_SECRET = process.env.JWT_SECRET || "SUPER_RAHASIA_DEV_GAME_FARMING_2026"; // Kunci rahasia token
 
 let localConfig = { poin_per_iklan: 10 };
 try {
@@ -23,6 +25,25 @@ mongoose.connect(MONGO_URI)
     .then(() => console.log("Terhubung ke MongoDB Cloud!"))
     .catch(err => console.error("Gagal konek MongoDB:", err));
 
+// --- FUNGSI BANTUAN: MENDAPATKAN IP PENGGUNA ---
+function getClientIp(req) {
+    return req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || "Unknown";
+}
+
+// --- MIDDLEWARE: VALIDASI TOKEN (KEAMANAN API) ---
+function authenticateToken(req, res, next) {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1]; // Format: "Bearer <TOKEN>"
+    
+    if (!token) return res.status(401).json({ status: "error", message: "Akses ditolak! Harus login." });
+
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.status(403).json({ status: "error", message: "Sesi tidak valid / Kadaluarsa!" });
+        req.user = user; // Menyimpan data user dari token ke dalam request
+        next();
+    });
+}
+
 // --- SKEMA DATABASE ---
 const UserSchema = new mongoose.Schema({
     nomor_dana: { type: String, unique: true, required: true },
@@ -31,7 +52,8 @@ const UserSchema = new mongoose.Schema({
     cash_point: { type: Number, default: 0 },
     jumlah_bibit: { type: Number, default: 3 },
     jumlah_lahan: { type: Number, default: 1 },
-    daily_ads: { type: Number, default: 0 }
+    daily_ads: { type: Number, default: 0 },
+    last_ip: { type: String, default: "-" } // TAMBAHAN: Menyimpan IP pengguna
 });
 const User = mongoose.model('User', UserSchema);
 
@@ -71,10 +93,12 @@ app.post('/api/register', async (req, res) => {
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(password, salt);
+        const userIp = getClientIp(req);
 
-        const userBaru = await User.create({
+        await User.create({
             nomor_dana,
-            password: hashedPassword
+            password: hashedPassword,
+            last_ip: userIp
         });
 
         res.json({ status: "success", message: "Registrasi Akun Berhasil!" });
@@ -98,10 +122,17 @@ app.post('/api/login', async (req, res) => {
             return res.status(400).json({ status: "error", message: "Password salah!" });
         }
 
+        // TAMBAHAN: Buat Token JWT (Berlaku 7 Hari) dan Update IP
+        const token = jwt.sign({ nomor_dana: user.nomor_dana }, JWT_SECRET, { expiresIn: '7d' });
+        
+        user.last_ip = getClientIp(req);
+        await user.save();
+
         const currentPoin = await getPoinPerIklan();
         res.json({ 
             status: "success", 
             message: "Login Berhasil!",
+            token: token, // Kirim token ke client
             user: { ...user._doc, poin_per_iklan: currentPoin }
         });
     } catch (err) {
@@ -109,9 +140,15 @@ app.post('/api/login', async (req, res) => {
     }
 });
 
-// --- API ENDPOINTS LAINNYA ---
-app.get('/api/get-saldo/:nomor_dana', async (req, res) => {
+// --- API ENDPOINTS (DILINDUNGI JWT) ---
+
+app.get('/api/get-saldo/:nomor_dana', authenticateToken, async (req, res) => {
     try {
+        // Cek Keamanan: Pastikan token sesuai dengan nomor dana yang diminta
+        if (req.user.nomor_dana !== req.params.nomor_dana) {
+            return res.status(403).json({ status: "error", message: "Ilegal: Tidak bisa melihat data akun lain!" });
+        }
+
         let user = await User.findOne({ nomor_dana: req.params.nomor_dana });
         if (!user) return res.status(404).json({ status: "error", message: "User tidak ditemukan" });
         const currentPoin = await getPoinPerIklan();
@@ -121,9 +158,15 @@ app.get('/api/get-saldo/:nomor_dana', async (req, res) => {
     }
 });
 
-app.post('/api/update-all', async (req, res) => {
+app.post('/api/update-all', authenticateToken, async (req, res) => {
     try {
         const { nomor_dana, farm_coin, cash_point, jumlah_bibit, jumlah_lahan, daily_ads } = req.body;
+        
+        // Cek Keamanan: Cegah manipulasi nomor dana lewat request payload
+        if (req.user.nomor_dana !== nomor_dana) {
+            return res.status(403).json({ status: "error", message: "Ilegal: Manipulasi data akun lain terdeteksi!" });
+        }
+
         let user = await User.findOneAndUpdate(
             { nomor_dana: nomor_dana },
             { farm_coin, cash_point, jumlah_bibit, jumlah_lahan, daily_ads },
@@ -135,9 +178,14 @@ app.post('/api/update-all', async (req, res) => {
     }
 });
 
-app.post('/api/withdraw', async (req, res) => {
+app.post('/api/withdraw', authenticateToken, async (req, res) => {
     try {
         const { nomor_dana, nominal, bersih, cash_point_sekarang } = req.body;
+        
+        if (req.user.nomor_dana !== nomor_dana) {
+            return res.status(403).json({ status: "error", message: "Ilegal: Aksi tidak sah!" });
+        }
+
         let user = await User.findOne({ nomor_dana });
         if (!user) return res.status(404).json({ status: "error", message: "User tidak ditemukan" });
 
@@ -157,8 +205,9 @@ app.post('/api/withdraw', async (req, res) => {
     }
 });
 
-app.get('/api/history/:nomor_dana', async (req, res) => {
+app.get('/api/history/:nomor_dana', authenticateToken, async (req, res) => {
     try {
+        if (req.user.nomor_dana !== req.params.nomor_dana) return res.status(403).json({ status: "error" });
         const history = await Withdraw.find({ nomor_dana: req.params.nomor_dana }).sort({ _id: -1 });
         res.json(history);
     } catch (err) {
@@ -173,11 +222,11 @@ app.get('/admin', async (req, res) => {
         const wds = await Withdraw.find({}).sort({ _id: -1 });
         const currentPoin = await getPoinPerIklan();
         
-        // MODIFIKASI: Ditambahkan form Tambah Cash Point di samping ganti password
+        // MODIFIKASI: Ditambahkan form Edit Saldo Bebas (Bisa plus/minus) dan IP
         let playerRows = users.map(u => `
             <tr>
-                <td><strong>${u.nomor_dana}</strong></td>
-                <td>${u.farm_coin}</td>
+                <td><strong>${u.nomor_dana}</strong><br><small style="color:gray;">IP: ${u.last_ip}</small></td>
+                <td><span style="background: #e2f0d9; padding: 2px 6px; border-radius: 4px; font-weight: bold;">${u.farm_coin}</span></td>
                 <td><span style="background: #fff3cd; padding: 2px 6px; border-radius: 4px; font-weight: bold;">${u.cash_point}</span></td>
                 <td>${u.jumlah_bibit}</td>
                 <td>${u.jumlah_lahan}</td>
@@ -190,10 +239,16 @@ app.get('/admin', async (req, res) => {
                     </form>
                 </td>
                 <td>
-                    <form action="/admin/add-cashpoint" method="POST" style="display:inline-flex; gap: 5px;">
+                    <form action="/admin/edit-saldo" method="POST" style="display:inline-flex; gap: 5px; flex-direction:column;">
                         <input type="hidden" name="nomor_dana" value="${u.nomor_dana}">
-                        <input type="number" name="jumlah_poin" placeholder="Contoh: 100" required style="padding: 4px; border: 1px solid #ddd; border-radius:4px; width: 90px;">
-                        <input type="submit" value="Suntik + " class="btn-info" style="padding: 4px 8px; font-size: 13px;">
+                        <select name="jenis_saldo" style="padding: 4px; border: 1px solid #ddd; border-radius:4px;">
+                            <option value="cash_point">Cash Point</option>
+                            <option value="farm_coin">Farm Coin</option>
+                        </select>
+                        <div style="display:inline-flex; gap: 5px;">
+                            <input type="number" name="jumlah" placeholder="+/- Jumlah" required style="padding: 4px; border: 1px solid #ddd; border-radius:4px; width: 90px;" title="Gunakan minus (-) untuk mengurangi">
+                            <input type="submit" value="Terapkan" class="btn-info" style="padding: 4px 8px; font-size: 13px;">
+                        </div>
                     </form>
                 </td>
             </tr>
@@ -282,14 +337,14 @@ app.get('/admin', async (req, res) => {
                     <table>
                         <thead>
                             <tr>
-                                <th>Nomor DANA</th>
+                                <th>Data Pemain</th>
                                 <th>Farm Coin</th>
                                 <th>Cash Point</th>
                                 <th>Stok Bibit</th>
                                 <th>Lahan Terbuka</th>
                                 <th>Iklan Hari Ini</th>
                                 <th>Aksi Ganti Password</th>
-                                <th>Aksi Tambah Saldo</th>
+                                <th>Edit Saldo (Bisa Minus)</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -321,21 +376,24 @@ app.post('/admin/change-password', async (req, res) => {
     }
 });
 
-// --- NEW ROUTE ACTION: PROSES SUNTIK CASH POINT VIA WEB ADMIN ---
-app.post('/admin/add-cashpoint', async (req, res) => {
+// --- NEW ROUTE ACTION: PROSES EDIT SALDO VIA WEB ADMIN ---
+app.post('/admin/edit-saldo', async (req, res) => {
     try {
-        const { nomor_dana, jumlah_poin } = req.body;
-        if (!nomor_dana || !jumlah_poin) return res.status(400).send("Input tidak boleh kosong!");
+        const { nomor_dana, jenis_saldo, jumlah } = req.body;
+        if (!nomor_dana || !jenis_saldo || !jumlah) return res.status(400).send("Input tidak lengkap!");
 
-        // Menggunakan operator $inc agar poin baru ditambahkan ke poin yang sudah ada
+        // Objek update dinamis berdasarkan pilihan dropdown
+        let updateData = {};
+        updateData[jenis_saldo] = parseInt(jumlah); // $inc bisa menambah (+) atau mengurangi jika nilainya minus (-)
+
         await User.findOneAndUpdate(
             { nomor_dana: nomor_dana },
-            { $inc: { cash_point: parseInt(jumlah_poin) } }
+            { $inc: updateData }
         );
 
-        res.redirect('/admin'); // Refresh halaman admin setelah sukses
+        res.redirect('/admin'); 
     } catch (err) {
-        res.status(500).send("Gagal menyuntik cash point: " + err.message);
+        res.status(500).send("Gagal mengedit saldo: " + err.message);
     }
 });
 
@@ -380,4 +438,4 @@ app.post('/admin/update-config', async (req, res) => {
     }
 });
 
-app.listen(process.env.PORT || 8080, () => console.log("Server online!"));
+app.listen(process.env.PORT || 8080, () => console.log("Server online dengan keamanan JWT aktif!"));
