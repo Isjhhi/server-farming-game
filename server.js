@@ -1,8 +1,8 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const bcrypt = require('bcryptjs'); // Library pengaman password
-const jwt = require('jsonwebtoken'); // TAMBAHAN: Library Token Keamanan
+const bcrypt = require('bcryptjs'); 
+const jwt = require('jsonwebtoken'); 
 const app = express();
 
 app.use(cors());
@@ -10,7 +10,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 const RATIO_CASHPOINT_KE_RUPIAH = 1; 
-const JWT_SECRET = process.env.JWT_SECRET || "SUPER_RAHASIA_DEV_GAME_FARMING_2026"; // Kunci rahasia token
+const JWT_SECRET = process.env.JWT_SECRET || "SUPER_RAHASIA_DEV_GAME_FARMING_2026"; 
 
 let localConfig = { poin_per_iklan: 10 };
 try {
@@ -33,13 +33,13 @@ function getClientIp(req) {
 // --- MIDDLEWARE: VALIDASI TOKEN (KEAMANAN API) ---
 function authenticateToken(req, res, next) {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Format: "Bearer <TOKEN>"
+    const token = authHeader && authHeader.split(' ')[1]; 
     
     if (!token) return res.status(401).json({ status: "error", message: "Akses ditolak! Harus login." });
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) return res.status(403).json({ status: "error", message: "Sesi tidak valid / Kadaluarsa!" });
-        req.user = user; // Menyimpan data user dari token ke dalam request
+        req.user = user; 
         next();
     });
 }
@@ -53,7 +53,7 @@ const UserSchema = new mongoose.Schema({
     jumlah_bibit: { type: Number, default: 3 },
     jumlah_lahan: { type: Number, default: 1 },
     daily_ads: { type: Number, default: 0 },
-    last_ip: { type: String, default: "-" } // TAMBAHAN: Menyimpan IP pengguna
+    last_ip: { type: String, default: "-" } 
 });
 const User = mongoose.model('User', UserSchema);
 
@@ -122,7 +122,6 @@ app.post('/api/login', async (req, res) => {
             return res.status(400).json({ status: "error", message: "Password salah!" });
         }
 
-        // TAMBAHAN: Buat Token JWT (Berlaku 7 Hari) dan Update IP
         const token = jwt.sign({ nomor_dana: user.nomor_dana }, JWT_SECRET, { expiresIn: '7d' });
         
         user.last_ip = getClientIp(req);
@@ -132,7 +131,7 @@ app.post('/api/login', async (req, res) => {
         res.json({ 
             status: "success", 
             message: "Login Berhasil!",
-            token: token, // Kirim token ke client
+            token: token, 
             user: { ...user._doc, poin_per_iklan: currentPoin }
         });
     } catch (err) {
@@ -144,7 +143,6 @@ app.post('/api/login', async (req, res) => {
 
 app.get('/api/get-saldo/:nomor_dana', authenticateToken, async (req, res) => {
     try {
-        // Cek Keamanan: Pastikan token sesuai dengan nomor dana yang diminta
         if (req.user.nomor_dana !== req.params.nomor_dana) {
             return res.status(403).json({ status: "error", message: "Ilegal: Tidak bisa melihat data akun lain!" });
         }
@@ -162,7 +160,6 @@ app.post('/api/update-all', authenticateToken, async (req, res) => {
     try {
         const { nomor_dana, farm_coin, cash_point, jumlah_bibit, jumlah_lahan, daily_ads } = req.body;
         
-        // Cek Keamanan: Cegah manipulasi nomor dana lewat request payload
         if (req.user.nomor_dana !== nomor_dana) {
             return res.status(403).json({ status: "error", message: "Ilegal: Manipulasi data akun lain terdeteksi!" });
         }
@@ -173,6 +170,45 @@ app.post('/api/update-all', authenticateToken, async (req, res) => {
             { new: true }
         );
         res.json({ status: "success", user });
+    } catch (err) {
+        res.status(500).json({ status: "error", message: err.message });
+    }
+});
+
+// --- ENDPOINT UNTUK AMBIL CONFIG GAME ---
+app.get('/api/config', authenticateToken, async (req, res) => {
+    try {
+        const currentPoin = await getPoinPerIklan();
+        res.json({ poin_per_iklan: currentPoin });
+    } catch (err) {
+        res.status(500).json({ status: "error", message: err.message });
+    }
+});
+
+// --- ENDPOINT UNTUK TAMBAH POIN DARI IKLAN ---
+app.post('/api/tambah-poin', authenticateToken, async (req, res) => {
+    try {
+        const { nomor_dana, jumlah, secret } = req.body;
+        
+        if (req.user.nomor_dana !== nomor_dana) {
+            return res.status(403).json({ status: "error", message: "Akses ilegal! Token tidak cocok." });
+        }
+
+        if (secret !== "rahasia_banget_123") {
+             return res.status(403).json({ status: "error", message: "Secret key salah!" });
+        }
+
+        let user = await User.findOneAndUpdate(
+            { nomor_dana: nomor_dana },
+            { $inc: { cash_point: parseInt(jumlah), daily_ads: 1 } },
+            { new: true }
+        );
+
+        if (!user) {
+            return res.status(404).json({ status: "error", message: "User tidak ditemukan di database" });
+        }
+
+        res.json({ status: "success", new_balance: user.cash_point });
     } catch (err) {
         res.status(500).json({ status: "error", message: err.message });
     }
@@ -222,7 +258,6 @@ app.get('/admin', async (req, res) => {
         const wds = await Withdraw.find({}).sort({ _id: -1 });
         const currentPoin = await getPoinPerIklan();
         
-        // MODIFIKASI: Ditambahkan form Edit Saldo Bebas (Bisa plus/minus) dan IP
         let playerRows = users.map(u => `
             <tr>
                 <td><strong>${u.nomor_dana}</strong><br><small style="color:gray;">IP: ${u.last_ip}</small></td>
@@ -382,9 +417,8 @@ app.post('/admin/edit-saldo', async (req, res) => {
         const { nomor_dana, jenis_saldo, jumlah } = req.body;
         if (!nomor_dana || !jenis_saldo || !jumlah) return res.status(400).send("Input tidak lengkap!");
 
-        // Objek update dinamis berdasarkan pilihan dropdown
         let updateData = {};
-        updateData[jenis_saldo] = parseInt(jumlah); // $inc bisa menambah (+) atau mengurangi jika nilainya minus (-)
+        updateData[jenis_saldo] = parseInt(jumlah); 
 
         await User.findOneAndUpdate(
             { nomor_dana: nomor_dana },
